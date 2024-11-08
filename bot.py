@@ -1,106 +1,198 @@
 import os
 import json
-from telegram import Update, Bot, ReplyKeyboardMarkup
-from telegram.ext import CommandHandler, Updater, MessageHandler, Filters, CallbackContext
+import logging
+from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    ContextTypes,
+    filters,
+)
+from dotenv import load_dotenv
 
-# Отримання токена з середовища Heroku
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+# Завантаження змінних середовища з .env файлу
+load_dotenv()
 
-# Ім'я файлу для зберігання прогресу
+# Налаштування логування
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
+# Ім'я файлу для збереження прогресу
 PROGRESS_FILE = "progress.json"
-
-# Список користувачів і їх завдання
-users = {
-    "@anwesxx": {"name": "Анна", "tasks": []},
-    "@Undertaker_A": {"name": "Михайло", "tasks": []},
-    "@Konnerpo": {"name": "Артем", "tasks": []},
-    "@chaos_queen_fs": {"name": "Монорочка", "tasks": []},
-    "@Lyoha221": {"name": "Льоха", "tasks": []},
-    "@PeachBombastic": {"name": "Peach", "tasks": []},
-    "@Kvas_Enjoyer": {"name": "Квасовий поціновувач", "tasks": []},
-    "@HOMYARCHOK": {"name": "Хом'як", "tasks": []},
-    "@lilTitanlil": {"name": "Малий Титан", "tasks": []},
-    "@Crysun": {"name": "Кріс", "tasks": []},
-    "@is_mlbb": {"name": "Олег", "tasks": []}
-}
+# Папка для збереження скріншотів
+SCREENSHOTS_DIR = "screenshots"
 
 # Ініціалізація прогресу
 def load_progress():
     if os.path.exists(PROGRESS_FILE):
         with open(PROGRESS_FILE, "r") as f:
             return json.load(f)
-    return {user: {"tasks_completed": []} for user in users}
+    return {}
 
 def save_progress(progress):
     with open(PROGRESS_FILE, "w") as f:
-        json.dump(progress, f)
+        json.dump(progress, f, indent=4)
 
-progress = load_progress()
+# Ініціалізація завдань (можна адаптувати під реальні герої)
+TASKS = {
+    "user1": ["Герой A", "Герой B", "Герой C"],
+    "user2": ["Герой D", "Герой E", "Герой F"],
+    # Додайте інших користувачів та їх завдання
+}
 
-# Привітання користувача
-def start(update: Update, context: CallbackContext):
-    user_id = f"@{update.message.from_user.username}"
-    if user_id in users:
-        welcome_message = f"Привіт, {users[user_id]['name']}! Дякую за допомогу! 😊\n" \
-                          f"Ваше завдання — зробити скріншоти обраних персонажів. Щоб переглянути, які скріншоти потрібно додати, " \
-                          f"введіть /tasks."
-        keyboard = [['Додати скріншот', 'Перевірити прогрес'], ['Команди', 'Допомога']]
-        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-        context.bot.send_message(chat_id=update.effective_chat.id, text=welcome_message, reply_markup=reply_markup)
+# Створення папки для скріншотів, якщо не існує
+if not os.path.exists(SCREENSHOTS_DIR):
+    os.makedirs(SCREENSHOTS_DIR)
+
+# Обробник команди /start
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    username = user.username if user.username else user.first_name
+    user_id = str(user.id)
+    
+    progress = load_progress()
+    
+    if user_id not in progress:
+        # Призначення завдань користувачу (можна реалізувати більш динамічно)
+        progress[user_id] = {
+            "username": username,
+            "tasks": TASKS.get(username, ["Герой A", "Герой B", "Герой C"]),
+            "completed": []
+        }
+        save_progress(progress)
+    
+    reply_text = (
+        f"Привіт, {username}! 👋\n\n"
+        "Дякуємо за допомогу у зборі скріншотів персонажів з Mobile Legends.\n"
+        "Ви можете переглянути свої завдання за допомогою /tasks.\n"
+        "Якщо у вас виникнуть питання, скористайтесь /help."
+    )
+    
+    # Створення клавіатури з кнопками
+    keyboard = [
+        ["Додати скріншот", "Перевірити прогрес"],
+        ["Команди", "Допомога"]
+    ]
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    
+    await update.message.reply_text(reply_text, reply_markup=reply_markup)
+
+# Обробник команди /tasks
+async def tasks_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    user_id = str(user.id)
+    progress = load_progress()
+    
+    if user_id in progress:
+        tasks = progress[user_id]["tasks"]
+        tasks_text = "\n".join([f"- {task}" for task in tasks])
+        await update.message.reply_text(f"Ваші завдання:\n{tasks_text}")
     else:
-        context.bot.send_message(chat_id=update.effective_chat.id, text="Привіт! Ви не вказані в списку учасників, але можете допомогти!")
+        await update.message.reply_text("Ви ще не розпочали. Використайте /start для початку.")
 
-# Показ завдань для кожного користувача
-def tasks(update: Update, context: CallbackContext):
-    user_id = f"@{update.message.from_user.username}"
-    if user_id in users:
-        tasks_needed = [task for task in users[user_id]["tasks"] if task not in progress[user_id]["tasks_completed"]]
-        task_list = "\n".join(tasks_needed) if tasks_needed else "Усі скріншоти вже додані. Дякуємо!"
-        context.bot.send_message(chat_id=update.effective_chat.id, text=f"Ваші завдання:\n{task_list}")
+# Обробник команди /progress
+async def progress_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    user_id = str(user.id)
+    progress = load_progress()
+    
+    if user_id in progress:
+        completed = progress[user_id]["completed"]
+        total = len(progress[user_id]["tasks"])
+        progress_text = f"Ви виконали {len(completed)}/{total} завдань."
+        if completed:
+            completed_tasks = "\n".join([f"- {task}" for task in completed])
+            progress_text += f"\n\nЗавершені завдання:\n{completed_tasks}"
+        await update.message.reply_text(progress_text)
     else:
-        context.bot.send_message(chat_id=update.effective_chat.id, text="Привіт! Ви не маєте призначених завдань.")
+        await update.message.reply_text("Ви ще не розпочали. Використайте /start для початку.")
 
-# Обробка додавання скріншотів
-def add_screenshot(update: Update, context: CallbackContext):
-    user_id = f"@{update.message.from_user.username}"
-    if user_id in users:
-        if update.message.photo:
-            # Отримання першого фото з повідомлення
-            photo_file = update.message.photo[-1].get_file()
-            filename = f"{user_id}_{len(progress[user_id]['tasks_completed']) + 1}.jpg"
-            photo_file.download(filename)
+# Обробник команди /help
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    help_text = (
+        "Доступні команди:\n"
+        "/start - Запустити бота та отримати привітання.\n"
+        "/tasks - Показати ваші завдання.\n"
+        "/progress - Перевірити ваш прогрес.\n"
+        "/help - Показати це повідомлення."
+    )
+    await update.message.reply_text(help_text)
 
-            # Оновлення прогресу
-            progress[user_id]["tasks_completed"].append(filename)
-            save_progress(progress)
-
-            context.bot.send_message(chat_id=update.effective_chat.id, text="Скріншот отримано! Дякую за допомогу!")
-        else:
-            context.bot.send_message(chat_id=update.effective_chat.id, text="Будь ласка, надішліть зображення.")
+# Обробник кнопок
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.message.text
+    if query == "Додати скріншот":
+        await update.message.reply_text("Будь ласка, надішліть скріншот персонажа.")
+    elif query == "Перевірити прогрес":
+        await progress_command(update, context)
+    elif query == "Команди":
+        await help_command(update, context)
+    elif query == "Допомога":
+        await help_command(update, context)
     else:
-        context.bot.send_message(chat_id=update.effective_chat.id, text="Ви не вказані в списку учасників.")
+        await update.message.reply_text("Не зрозуміла команда. Використайте /help для списку доступних команд.")
 
-def help_command(update: Update, context: CallbackContext):
-    help_text = "Команди бота:\n" \
-                "/start - Почати роботу\n" \
-                "/tasks - Показати завдання\n" \
-                "Надішліть зображення, щоб додати скріншот."
-    context.bot.send_message(chat_id=update.effective_chat.id, text=help_text)
+# Обробник додавання скріншоту
+async def add_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    user_id = str(user.id)
+    progress = load_progress()
+    
+    if user_id not in progress:
+        await update.message.reply_text("Ви ще не розпочали. Використайте /start для початку.")
+        return
+    
+    if update.message.photo:
+        photo_file = update.message.photo[-1].get_file()
+        task_list = progress[user_id]["tasks"]
+        completed = progress[user_id]["completed"]
+        
+        # Визначення наступного завдання
+        remaining_tasks = [task for task in task_list if task not in completed]
+        if not remaining_tasks:
+            await update.message.reply_text("Ви вже виконали всі завдання. Дякуємо за участь!")
+            return
+        
+        current_task = remaining_tasks[0]
+        filename = f"{user_id}_{current_task.replace(' ', '_')}.jpg"
+        filepath = os.path.join(SCREENSHOTS_DIR, filename)
+        await photo_file.download_to_drive(filepath)
+        
+        # Оновлення прогресу
+        progress[user_id]["completed"].append(current_task)
+        save_progress(progress)
+        
+        await update.message.reply_text(f"Скріншот для '{current_task}' отримано! 🎉")
+    else:
+        await update.message.reply_text("Будь ласка, надішліть зображення у форматі фото.")
 
+# Основна функція запуску бота
 def main():
-    updater = Updater(TOKEN, use_context=True)
-    dp = updater.dispatcher
-
-    dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(CommandHandler("tasks", tasks))
-    dp.add_handler(CommandHandler("help", help_command))
-    dp.add_handler(MessageHandler(Filters.photo, add_screenshot))
-    dp.add_handler(MessageHandler(Filters.text & Filters.regex("^(Додати скріншот)$"), add_screenshot))
-    dp.add_handler(MessageHandler(Filters.text & Filters.regex("^(Перевірити прогрес)$"), tasks))
-    dp.add_handler(MessageHandler(Filters.text & Filters.regex("^(Команди|Допомога)$"), help_command))
-
-    updater.start_polling()
-    updater.idle()
+    TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+    if not TOKEN:
+        logger.error("TELEGRAM_BOT_TOKEN не встановлено в змінних середовища.")
+        return
+    
+    application = ApplicationBuilder().token(TOKEN).build()
+    
+    # Додавання обробників команд
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("tasks", tasks_command))
+    application.add_handler(CommandHandler("progress", progress_command))
+    application.add_handler(CommandHandler("help", help_command))
+    
+    # Обробник кнопок
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, button_handler))
+    
+    # Обробник фотографій
+    application.add_handler(MessageHandler(filters.PHOTO, add_screenshot))
+    
+    # Запуск бота
+    application.run_polling()
 
 if __name__ == "__main__":
     main()
