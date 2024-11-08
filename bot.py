@@ -1,7 +1,12 @@
 import os
-import json
 import logging
-from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from datetime import datetime
+from sqlalchemy import create_engine, Column, String, Integer, ForeignKey, DateTime, Boolean, func
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import relationship, sessionmaker
+import boto3
+from botocore.exceptions import NoCredentialsError
+from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -11,7 +16,7 @@ from telegram.ext import (
 )
 from dotenv import load_dotenv
 
-# Завантаження змінних середовища з .env файлу
+# Завантаження змінних середовища
 load_dotenv()
 
 # Налаштування логування
@@ -21,176 +26,275 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Ім'я файлу для збереження прогресу
-PROGRESS_FILE = "progress.json"
-# Папка для збереження скріншотів
-SCREENSHOTS_DIR = "screenshots"
+# Налаштування бази даних
+DATABASE_URL = os.getenv("DATABASE_URL")
+if not DATABASE_URL:
+    logger.error("DATABASE_URL не знайдено. Будь ласка, встановіть його у змінних середовища.")
+    exit(1)
 
-# Ініціалізація прогресу
-def load_progress():
-    if os.path.exists(PROGRESS_FILE):
-        with open(PROGRESS_FILE, "r") as f:
-            return json.load(f)
-    return {}
+engine = create_engine(DATABASE_URL)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
 
-def save_progress(progress):
-    with open(PROGRESS_FILE, "w") as f:
-        json.dump(progress, f, indent=4)
+# Моделі бази даних
+class User(Base):
+    __tablename__ = 'users'
+    user_id = Column(String, primary_key=True, index=True)
+    username = Column(String, unique=True, nullable=False)
+    badges = Column(String, default="")
+    tasks = relationship("Task", back_populates="user")
+    contributions = relationship("Contribution", back_populates="user")
 
-# Ініціалізація завдань (можна адаптувати під реальні герої)
-TASKS = {
-    "user1": ["Герой A", "Герой B", "Герой C"],
-    "user2": ["Герой D", "Герой E", "Герой F"],
-    # Додайте інших користувачів та їх завдання
-}
+class Task(Base):
+    __tablename__ = 'tasks'
+    id = Column(Integer, primary_key=True, index=True)
+    description = Column(String, nullable=False)
+    completed = Column(Boolean, default=False)
+    user_id = Column(String, ForeignKey('users.user_id'))
+    user = relationship("User", back_populates="tasks")
+
+class Contribution(Base):
+    __tablename__ = 'contributions'
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(String, ForeignKey('users.user_id'))
+    task_id = Column(Integer, ForeignKey('tasks.id'))
+    timestamp = Column(DateTime, default=datetime.utcnow)
+    user = relationship("User", back_populates="contributions")
+    task = relationship("Task")
+
+# Налаштування S3
+s3 = boto3.client(
+    's3',
+    aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+    aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY")
+)
+S3_BUCKET = os.getenv("AWS_S3_BUCKET_NAME")
 
 # Створення папки для скріншотів, якщо не існує
+SCREENSHOTS_DIR = "screenshots"
 if not os.path.exists(SCREENSHOTS_DIR):
     os.makedirs(SCREENSHOTS_DIR)
 
-# Обробник команди /start
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+# Функції для роботи з базою даних
+def get_session():
+    return SessionLocal()
+
+def add_badge(user, badge_name):
+    badges = user.badges.split(", ") if user.badges else []
+    if badge_name not in badges:
+        badges.append(badge_name)
+        user.badges = ", ".join(badges)
+
+# Функція для завантаження файлу на S3
+def upload_to_s3(file_path, filename):
+    try:
+        s3.upload_file(file_path, S3_BUCKET, filename)
+        logger.info(f"Файл {filename} успішно завантажено на S3.")
+        os.remove(file_path)  # Видалити локальний файл після завантаження
+        return True
+    except FileNotFoundError:
+        logger.error("Файл не знайдено.")
+        return False
+    except NoCredentialsError:
+        logger.error("AWS Credentials не знайдено.")
+        return False
+
+# Обробники команд та повідомлень
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    session = get_session()
     user = update.effective_user
-    username = user.username if user.username else user.first_name
     user_id = str(user.id)
-    
-    progress = load_progress()
-    
-    if user_id not in progress:
-        # Призначення завдань користувачу (можна реалізувати більш динамічно)
-        progress[user_id] = {
-            "username": username,
-            "tasks": TASKS.get(username, ["Герой A", "Герой B", "Герой C"]),
-            "completed": []
-        }
-        save_progress(progress)
-    
+    username = user.username or user.first_name
+
+    user_entry = session.query(User).filter_by(user_id=user_id).first()
+    if not user_entry:
+        user_entry = User(user_id=user_id, username=username)
+        session.add(user_entry)
+        session.commit()
+
+    session.close()
+
     reply_text = (
         f"Привіт, {username}! 👋\n\n"
-        "Дякуємо за допомогу у зборі скріншотів персонажів з Mobile Legends.\n"
+        "Дякуємо за допомогу у зборі скріншотів персонажів.\n"
         "Ви можете переглянути свої завдання за допомогою /tasks.\n"
         "Якщо у вас виникнуть питання, скористайтесь /help."
     )
-    
-    # Створення клавіатури з кнопками
+
     keyboard = [
         ["Додати скріншот", "Перевірити прогрес"],
         ["Команди", "Допомога"]
     ]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-    
+
     await update.message.reply_text(reply_text, reply_markup=reply_markup)
 
-# Обробник команди /tasks
-async def tasks_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def tasks_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    session = get_session()
     user = update.effective_user
     user_id = str(user.id)
-    progress = load_progress()
-    
-    if user_id in progress:
-        tasks = progress[user_id]["tasks"]
-        tasks_text = "\n".join([f"- {task}" for task in tasks])
-        await update.message.reply_text(f"Ваші завдання:\n{tasks_text}")
-    else:
-        await update.message.reply_text("Ви ще не розпочали. Використайте /start для початку.")
 
-# Обробник команди /progress
-async def progress_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_entry = session.query(User).filter_by(user_id=user_id).first()
+    if not user_entry:
+        await update.message.reply_text("Ви ще не розпочали. Використайте /start для початку.")
+        session.close()
+        return
+
+    tasks = session.query(Task).filter_by(user_id=user_id).all()
+    if not tasks:
+        await update.message.reply_text("У вас немає призначених завдань.")
+        session.close()
+        return
+
+    tasks_text = ""
+    for task in tasks:
+        status = "✅ Виконано" if task.completed else "❌ Не виконано"
+        tasks_text += f"- {task.description} : {status}\n"
+
+    await update.message.reply_text(f"Ваші завдання:\n{tasks_text}")
+    session.close()
+
+async def progress_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    session = get_session()
     user = update.effective_user
     user_id = str(user.id)
-    progress = load_progress()
-    
-    if user_id in progress:
-        completed = progress[user_id]["completed"]
-        total = len(progress[user_id]["tasks"])
-        progress_text = f"Ви виконали {len(completed)}/{total} завдань."
-        if completed:
-            completed_tasks = "\n".join([f"- {task}" for task in completed])
-            progress_text += f"\n\nЗавершені завдання:\n{completed_tasks}"
-        await update.message.reply_text(progress_text)
-    else:
-        await update.message.reply_text("Ви ще не розпочали. Використайте /start для початку.")
 
-# Обробник команди /help
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_entry = session.query(User).filter_by(user_id=user_id).first()
+    if not user_entry:
+        await update.message.reply_text("Ви ще не розпочали. Використайте /start для початку.")
+        session.close()
+        return
+
+    completed = session.query(Task).filter_by(user_id=user_id, completed=True).count()
+    total = session.query(Task).filter_by(user_id=user_id).count()
+
+    progress_text = f"Ви виконали {completed} з {total} завдань."
+    await update.message.reply_text(progress_text)
+    session.close()
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_text = (
         "Доступні команди:\n"
         "/start - Запустити бота та отримати привітання.\n"
         "/tasks - Показати ваші завдання.\n"
         "/progress - Перевірити ваш прогрес.\n"
+        "/leaderboard - Показати топ учасників.\n"
         "/help - Показати це повідомлення."
     )
     await update.message.reply_text(help_text)
 
-# Обробник кнопок
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.message.text
     if query == "Додати скріншот":
-        await update.message.reply_text("Будь ласка, надішліть скріншот персонажа.")
+        await update.message.reply_text("Будь ласка, надішліть скріншот.")
     elif query == "Перевірити прогрес":
         await progress_command(update, context)
-    elif query == "Команди":
-        await help_command(update, context)
-    elif query == "Допомога":
+    elif query in ["Команди", "Допомога"]:
         await help_command(update, context)
     else:
-        await update.message.reply_text("Не зрозуміла команда. Використайте /help для списку доступних команд.")
+        await update.message.reply_text("Не зрозуміла команда. Використайте /help.")
 
-# Обробник додавання скріншоту
-async def add_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def add_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    session = get_session()
     user = update.effective_user
     user_id = str(user.id)
-    progress = load_progress()
-    
-    if user_id not in progress:
+
+    user_entry = session.query(User).filter_by(user_id=user_id).first()
+    if not user_entry:
         await update.message.reply_text("Ви ще не розпочали. Використайте /start для початку.")
+        session.close()
         return
-    
+
     if update.message.photo:
-        photo_file = update.message.photo[-1].get_file()
-        task_list = progress[user_id]["tasks"]
-        completed = progress[user_id]["completed"]
-        
-        # Визначення наступного завдання
-        remaining_tasks = [task for task in task_list if task not in completed]
-        if not remaining_tasks:
-            await update.message.reply_text("Ви вже виконали всі завдання. Дякуємо за участь!")
-            return
-        
-        current_task = remaining_tasks[0]
-        filename = f"{user_id}_{current_task.replace(' ', '_')}.jpg"
-        filepath = os.path.join(SCREENSHOTS_DIR, filename)
-        await photo_file.download_to_drive(filepath)
-        
-        # Оновлення прогресу
-        progress[user_id]["completed"].append(current_task)
-        save_progress(progress)
-        
-        await update.message.reply_text(f"Скріншот для '{current_task}' отримано! 🎉")
+        try:
+            photo_file = await update.message.photo[-1].get_file()
+            task = session.query(Task).filter_by(user_id=user_id, completed=False).first()
+            if not task:
+                await update.message.reply_text("Ви виконали всі завдання!")
+                session.close()
+                return
+
+            filename = f"{user_id}_{task.id}.jpg"
+            filepath = os.path.join(SCREENSHOTS_DIR, filename)
+            await photo_file.download_to_drive(filepath)
+
+            success = upload_to_s3(filepath, filename)
+
+            if success:
+                task.completed = True
+                contribution = Contribution(user_id=user_id, task_id=task.id)
+                session.add(contribution)
+                session.commit()
+
+                await update.message.reply_text(f"Скріншот для '{task.description}' отримано та завантажено! 🎉")
+
+                # Перевірка на баджі
+                total_contributions = session.query(Contribution).filter_by(user_id=user_id).count()
+                if total_contributions == 5:
+                    add_badge(user_entry, "Початківець")
+                    await update.message.reply_text("Вітаємо! Ви отримали бадж **Початківець** 🎖️", parse_mode='Markdown')
+                elif total_contributions == 10:
+                    add_badge(user_entry, "Активний")
+                    await update.message.reply_text("Вітаємо! Ви отримали бадж **Активний** 🎖️", parse_mode='Markdown')
+
+                session.commit()
+            else:
+                await update.message.reply_text("Виникла помилка при завантаженні скріншоту на S3.")
+        except Exception as e:
+            logger.error(f"Помилка при обробці скріншоту: {e}")
+            await update.message.reply_text("Виникла помилка при завантаженні скріншоту. Спробуйте ще раз.")
+        finally:
+            session.close()
     else:
         await update.message.reply_text("Будь ласка, надішліть зображення у форматі фото.")
 
-# Основна функція запуску бота
+async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    session = get_session()
+    top_users = session.query(User.username, func.count(Contribution.id).label('contributions')) \
+                       .join(Contribution) \
+                       .group_by(User.username) \
+                       .order_by(func.count(Contribution.id).desc()) \
+                       .limit(3).all()
+
+    if not top_users:
+        await update.message.reply_text("Наразі немає активних учасників.")
+        session.close()
+        return
+
+    leaderboard_text = "🏆 **Топ 3 учасники** 🏆\n\n"
+    for idx, (username, contributions) in enumerate(top_users, start=1):
+        leaderboard_text += f"{idx}. {username} - {contributions} внесків\n"
+
+    await update.message.reply_text(leaderboard_text, parse_mode='Markdown')
+    session.close()
+
+# Обробник помилок
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    logger.error(msg="Exception while handling an update:", exc_info=context.error)
+    if isinstance(update, Update) and update.effective_message:
+        await update.effective_message.reply_text("Виникла помилка. Спробуйте пізніше.")
+
 def main():
     TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
     if not TOKEN:
-        logger.error("TELEGRAM_BOT_TOKEN не встановлено в змінних середовища.")
+        logger.error("TELEGRAM_BOT_TOKEN не встановлено у змінних середовища.")
         return
-    
+
     application = ApplicationBuilder().token(TOKEN).build()
-    
-    # Додавання обробників команд
+
+    # Створення таблиць у базі даних
+    Base.metadata.create_all(bind=engine)
+
+    # Додавання обробників
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("tasks", tasks_command))
     application.add_handler(CommandHandler("progress", progress_command))
     application.add_handler(CommandHandler("help", help_command))
-    
-    # Обробник кнопок
+    application.add_handler(CommandHandler("leaderboard", leaderboard))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, button_handler))
-    
-    # Обробник фотографій
     application.add_handler(MessageHandler(filters.PHOTO, add_screenshot))
-    
+    application.add_error_handler(error_handler)
+
     # Запуск бота
     application.run_polling()
 
