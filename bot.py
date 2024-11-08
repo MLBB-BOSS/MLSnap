@@ -5,11 +5,47 @@ from telegram.ext import CommandHandler, Application, MessageHandler, filters, C
 # Отримання токена з середовища Heroku
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
+# Створення папки для збереження зображень
+if not os.path.exists("screenshots"):
+    os.makedirs("screenshots")
+
+# Список користувачів і хештегів
+users = {
+    "@anwesxx": "Анна",
+    "@Undertaker_A": "Михайло",
+    "@Konnerpo": "Артем",
+    "@chaos_queen_fs": "Монорочка",
+    "@Lyoha221": "Льоха",
+    "@PeachBombastic": "Peach",
+    "@Kvas_Enjoyer": "Квасовий поціновувач",
+    "@HOMYARCHOK": "Хом'як",
+    "@lilTitanlil": "Малий Титан",
+    "@Crysun": "Кріс",
+    "@is_mlbb": "Олег"
+}
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text("Привіт! Я готовий допомогти тобі з зображеннями героїв.")
+    user_id = update.message.from_user.username
+    if user_id in users:
+        welcome_message = f"Привіт, {users[user_id]}! Раді бачити тебе тут!"
+        await update.message.reply_text(welcome_message)
+    else:
+        await update.message.reply_text("Привіт! Ви не вказані в списку користувачів.")
 
 async def add_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text("Скріншот отримано. Дякуємо за допомогу!")
+    user_id = update.message.from_user.username
+    user_name = users.get(user_id, "друг")
+
+    if update.message.photo:
+        # Отримання останнього зображення (вищої якості)
+        photo_file = await update.message.photo[-1].get_file()
+        file_path = f"screenshots/{user_id}_{photo_file.file_unique_id}.jpg"
+        
+        # Збереження зображення
+        await photo_file.download(file_path)
+        await update.message.reply_text(f"Скріншот отримано від {user_name}. Дякуємо за допомогу!")
+    else:
+        await update.message.reply_text("Будь ласка, надішліть зображення.")
 
 def main():
     # Створення застосунку бота
