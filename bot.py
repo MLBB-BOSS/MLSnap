@@ -1,11 +1,9 @@
 import os
 import logging
 from datetime import datetime
-from sqlalchemy import create_engine, Column, String, Integer, ForeignKey, DateTime, Boolean, func
+from sqlalchemy import create_engine, Column, String, Integer, ForeignKey, DateTime, Boolean, func, LargeBinary
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, sessionmaker
-import boto3
-from botocore.exceptions import NoCredentialsError
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
@@ -44,6 +42,7 @@ class User(Base):
     badges = Column(String, default="")
     tasks = relationship("Task", back_populates="user")
     contributions = relationship("Contribution", back_populates="user")
+    screenshots = relationship("Screenshot", back_populates="user")  # Додано відношення до Screenshot
 
 class Task(Base):
     __tablename__ = 'tasks'
@@ -62,18 +61,33 @@ class Contribution(Base):
     user = relationship("User", back_populates="contributions")
     task = relationship("Task")
 
-# Налаштування S3
-s3 = boto3.client(
-    's3',
-    aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
-    aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY")
-)
-S3_BUCKET = os.getenv("AWS_S3_BUCKET_NAME")
+# Нова модель для збереження скріншотів
+class Screenshot(Base):
+    __tablename__ = 'screenshots'
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(String, ForeignKey('users.user_id'))
+    task_id = Column(Integer, ForeignKey('tasks.id'))
+    image_data = Column(LargeBinary, nullable=False)
+    timestamp = Column(DateTime, default=datetime.utcnow)
+    user = relationship("User", back_populates="screenshots")
+    task = relationship("Task")
 
-# Створення папки для скріншотів, якщо не існує
-SCREENSHOTS_DIR = "screenshots"
-if not os.path.exists(SCREENSHOTS_DIR):
-    os.makedirs(SCREENSHOTS_DIR)
+# Видаляємо код, пов'язаний з AWS S3
+# import boto3
+# from botocore.exceptions import NoCredentialsError
+
+# # Налаштування S3
+# s3 = boto3.client(
+#     's3',
+#     aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+#     aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY")
+# )
+# S3_BUCKET = os.getenv("AWS_S3_BUCKET_NAME")
+
+# Видаляємо створення папки для скріншотів
+# SCREENSHOTS_DIR = "screenshots"
+# if not os.path.exists(SCREENSHOTS_DIR):
+#     os.makedirs(SCREENSHOTS_DIR)
 
 # Функції для роботи з базою даних
 def get_session():
@@ -84,20 +98,6 @@ def add_badge(user, badge_name):
     if badge_name not in badges:
         badges.append(badge_name)
         user.badges = ", ".join(badges)
-
-# Функція для завантаження файлу на S3
-def upload_to_s3(file_path, filename):
-    try:
-        s3.upload_file(file_path, S3_BUCKET, filename)
-        logger.info(f"Файл {filename} успішно завантажено на S3.")
-        os.remove(file_path)  # Видалити локальний файл після завантаження
-        return True
-    except FileNotFoundError:
-        logger.error("Файл не знайдено.")
-        return False
-    except NoCredentialsError:
-        logger.error("AWS Credentials не знайдено.")
-        return False
 
 # Обробники команд та повідомлень
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -214,35 +214,37 @@ async def add_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 session.close()
                 return
 
-            filename = f"{user_id}_{task.id}.jpg"
-            filepath = os.path.join(SCREENSHOTS_DIR, filename)
-            await photo_file.download_to_drive(filepath)
+            # Завантаження фото у вигляді байтів
+            photo_bytes = await photo_file.download_as_bytearray()
 
-            success = upload_to_s3(filepath, filename)
+            # Збереження скріншоту в базу даних
+            screenshot = Screenshot(
+                user_id=user_id,
+                task_id=task.id,
+                image_data=photo_bytes
+            )
+            session.add(screenshot)
 
-            if success:
-                task.completed = True
-                contribution = Contribution(user_id=user_id, task_id=task.id)
-                session.add(contribution)
-                session.commit()
+            # Оновлення завдання та внесків
+            task.completed = True
+            contribution = Contribution(user_id=user_id, task_id=task.id)
+            session.add(contribution)
 
-                await update.message.reply_text(f"Скріншот для '{task.description}' отримано та завантажено! 🎉")
+            # Перевірка на баджі
+            total_contributions = session.query(Contribution).filter_by(user_id=user_id).count()
+            if total_contributions == 5:
+                add_badge(user_entry, "Початківець")
+                await update.message.reply_text("Вітаємо! Ви отримали бадж **Початківець** 🎖️", parse_mode='Markdown')
+            elif total_contributions == 10:
+                add_badge(user_entry, "Активний")
+                await update.message.reply_text("Вітаємо! Ви отримали бадж **Активний** 🎖️", parse_mode='Markdown')
 
-                # Перевірка на баджі
-                total_contributions = session.query(Contribution).filter_by(user_id=user_id).count()
-                if total_contributions == 5:
-                    add_badge(user_entry, "Початківець")
-                    await update.message.reply_text("Вітаємо! Ви отримали бадж **Початківець** 🎖️", parse_mode='Markdown')
-                elif total_contributions == 10:
-                    add_badge(user_entry, "Активний")
-                    await update.message.reply_text("Вітаємо! Ви отримали бадж **Активний** 🎖️", parse_mode='Markdown')
+            session.commit()
 
-                session.commit()
-            else:
-                await update.message.reply_text("Виникла помилка при завантаженні скріншоту на S3.")
+            await update.message.reply_text(f"Скріншот для '{task.description}' отримано та збережено! 🎉")
         except Exception as e:
             logger.error(f"Помилка при обробці скріншоту: {e}")
-            await update.message.reply_text("Виникла помилка при завантаженні скріншоту. Спробуйте ще раз.")
+            await update.message.reply_text("Виникла помилка при збереженні скріншоту. Спробуйте ще раз.")
         finally:
             session.close()
     else:
