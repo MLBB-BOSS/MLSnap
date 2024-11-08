@@ -37,7 +37,7 @@ def check_progress(update: Update, context: CallbackContext) -> None:
 
 def main():
     # Отримання токену з середовища
-    token = os.getenv("TELEGRAM_TOKEN")
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
     updater = Updater(token)
     dp = updater.dispatcher
 
