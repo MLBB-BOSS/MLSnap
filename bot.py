@@ -17,11 +17,7 @@ from telegram.ext import (
     filters,
 )
 from telegram.constants import ParseMode
-from dotenv import load_dotenv
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-
-# Завантаження змінних середовища
-load_dotenv()
 
 # Налаштування логування
 logging.basicConfig(
@@ -33,7 +29,7 @@ logger = logging.getLogger(__name__)
 # Налаштування бази даних
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
-    logger.error("DATABASE_URL не знайдено. Будь ласка, встановіть його у змінних середовища.")
+    logger.error("DATABASE_URL не знайдено. Будь ласка, встановіть його на Heroku.")
     exit(1)
 
 # Замінюємо 'postgres://' на 'postgresql://', якщо необхідно
@@ -473,7 +469,7 @@ async def send_weekly_reports(context: ContextTypes.DEFAULT_TYPE):
 def main():
     TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
     if not TOKEN:
-        logger.error("TELEGRAM_BOT_TOKEN не встановлено у змінних середовища.")
+        logger.error("TELEGRAM_BOT_TOKEN не встановлено на Heroku.")
         return
 
     application = ApplicationBuilder().token(TOKEN).build()
