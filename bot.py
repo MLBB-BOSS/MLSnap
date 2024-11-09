@@ -1,5 +1,8 @@
 import os
 import logging
+import hashlib
+import io
+import matplotlib.pyplot as plt
 from datetime import datetime
 from sqlalchemy import create_engine, Column, String, Integer, ForeignKey, DateTime, LargeBinary, Table
 from sqlalchemy.ext.declarative import declarative_base
@@ -13,7 +16,9 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
+from telegram.constants import ParseMode
 from dotenv import load_dotenv
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # Завантаження змінних середовища
 load_dotenv()
@@ -86,6 +91,7 @@ class Screenshot(Base):
     user_id = Column(String, ForeignKey('users.user_id'))
     character_id = Column(Integer, ForeignKey('characters.id'))
     image_data = Column(LargeBinary, nullable=False)
+    image_hash = Column(String, nullable=False)
     timestamp = Column(DateTime, default=datetime.utcnow)
     user = relationship("User", back_populates="screenshots")
     character = relationship("Character", back_populates="screenshots")
@@ -120,10 +126,10 @@ def load_characters():
             {"name": "Minotaur", "role": "Tank"},
             # Assassin
             {"name": "Saber", "role": "Assassin"},
-            {"name": "Alucard", "role": "Assassin"},
-            {"name": "Zilong", "role": "Assassin"},
             {"name": "Fanny", "role": "Assassin"},
             {"name": "Natalia", "role": "Assassin"},
+            {"name": "Lancelot", "role": "Assassin"},
+            {"name": "Hayabusa", "role": "Assassin"},
             # Marksman
             {"name": "Popol and Kupa", "role": "Marksman"},
             {"name": "Brody", "role": "Marksman"},
@@ -159,7 +165,7 @@ def load_characters():
 HEROES = {
     "Fighter": ["Balmond", "Alucard", "Bane", "Zilong", "Freya"],
     "Tank": ["Alice", "Tigreal", "Akai", "Franco", "Minotaur"],
-    "Assassin": ["Saber", "Alucard", "Zilong", "Fanny", "Natalia"],
+    "Assassin": ["Saber", "Fanny", "Natalia", "Lancelot", "Hayabusa"],
     "Marksman": ["Popol and Kupa", "Brody", "Beatrix", "Natan", "Melissa"],
     "Mage": ["Vale", "Lunox", "Kadita", "Cecillion", "Luo Yi"],
     "Support": ["Rafaela", "Minotaur", "Lolita", "Estes", "Angela"],
@@ -182,7 +188,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     reply_text = (
         f"Привіт, {username}! 👋\n\n"
-        "Ласкаво просимо до нашого бота. Ось доступні опції:"
+        "Оберіть потрібну опцію:"
     )
     keyboard = [
         ["Вибрати клас", "Перевірити прогрес"],
@@ -194,8 +200,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def choose_class(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [[InlineKeyboardButton(class_name, callback_data=f"class_{class_name}")] for class_name in HEROES.keys()]
+    recent_characters = context.user_data.get('recent_characters', [])
+    if recent_characters:
+        keyboard.append([InlineKeyboardButton("Останні персонажі", callback_data="recent_characters")])
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("Оберіть клас персонажа:", reply_markup=reply_markup)
+    await update.message.reply_text(
+        "Оберіть клас персонажа, для якого хочете завантажити скріншот:",
+        reply_markup=reply_markup
+    )
 
 async def handle_class_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -208,17 +220,19 @@ async def handle_class_selection(update: Update, context: ContextTypes.DEFAULT_T
         characters = HEROES[selected_class]
         keyboard = [[InlineKeyboardButton(char, callback_data=f"character_{char}")] for char in characters]
         keyboard.append([InlineKeyboardButton("Повернутися до класів", callback_data="back_to_classes")])
+        keyboard.append([InlineKeyboardButton("Повернутися до головного меню", callback_data="back_to_main_menu")])
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(
             f"Оберіть персонажа з класу **{selected_class}**:",
-            parse_mode='Markdown',
+            parse_mode=ParseMode.MARKDOWN,
             reply_markup=reply_markup
         )
 
     elif data == "back_to_classes":
-        keyboard = [[InlineKeyboardButton(class_name, callback_data=f"class_{class_name}")] for class_name in HEROES.keys()]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text("Оберіть клас персонажа:", reply_markup=reply_markup)
+        await choose_class(update, context)
+
+    elif data == "back_to_main_menu":
+        await start(update, context)
 
 async def handle_character_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -228,15 +242,35 @@ async def handle_character_selection(update: Update, context: ContextTypes.DEFAU
     if data.startswith("character_"):
         selected_character = data.split("_")[1]
         context.user_data['selected_character'] = selected_character
+
+        # Зберігаємо останні вибрані персонажі
+        recent_characters = context.user_data.get('recent_characters', [])
+        if selected_character not in recent_characters:
+            recent_characters.insert(0, selected_character)
+            if len(recent_characters) > 5:
+                recent_characters.pop()
+            context.user_data['recent_characters'] = recent_characters
+
         await query.edit_message_text(
             f"Ви вибрали: **{selected_character}**.\nБудь ласка, надішліть скріншот.",
-            parse_mode='Markdown'
+            parse_mode=ParseMode.MARKDOWN
         )
 
     elif data == "back_to_classes":
-        keyboard = [[InlineKeyboardButton(class_name, callback_data=f"class_{class_name}")] for class_name in HEROES.keys()]
+        await choose_class(update, context)
+
+    elif data == "back_to_main_menu":
+        await start(update, context)
+
+    elif data == "recent_characters":
+        recent_characters = context.user_data.get('recent_characters', [])
+        keyboard = [[InlineKeyboardButton(char, callback_data=f"character_{char}")] for char in recent_characters]
+        keyboard.append([InlineKeyboardButton("Повернутися до головного меню", callback_data="back_to_main_menu")])
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text("Оберіть клас персонажа:", reply_markup=reply_markup)
+        await query.edit_message_text(
+            "Оберіть одного з останніх вибраних персонажів:",
+            reply_markup=reply_markup
+        )
 
 async def add_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -267,11 +301,22 @@ async def add_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
             photo_file = await update.message.photo[-1].get_file()
             photo_bytes = await photo_file.download_as_bytearray()
 
+            # Обчислюємо хеш зображення
+            image_hash = hashlib.md5(photo_bytes).hexdigest()
+
+            # Перевіряємо на дублікати
+            existing_screenshot = session.query(Screenshot).filter_by(image_hash=image_hash, user_id=user_id).first()
+            if existing_screenshot:
+                await update.message.reply_text("Цей скріншот вже був надісланий раніше.")
+                session.close()
+                return
+
             # Збереження скріншоту в базу даних
             screenshot = Screenshot(
                 user_id=user_id,
                 character_id=character.id,
-                image_data=photo_bytes
+                image_data=photo_bytes,
+                image_hash=image_hash
             )
             session.add(screenshot)
 
@@ -281,22 +326,50 @@ async def add_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             # Перевірка на баджі
             total_contributions = session.query(Contribution).filter_by(user_id=user_id).count()
-            if total_contributions == 5 and "Початківець" not in (user_entry.badges or ""):
+            badges = user_entry.badges.split(", ") if user_entry.badges else []
+
+            if total_contributions == 5 and "Початківець" not in badges:
                 add_badge(user_entry, "Початківець")
-                await update.message.reply_text("Вітаємо! Ви отримали бадж **Початківець** 🎖️", parse_mode='Markdown')
-            elif total_contributions == 10 and "Активний" not in (user_entry.badges or ""):
+                badge_image_path = 'badges/pochatkivec.png'
+                await update.message.reply_photo(
+                    photo=open(badge_image_path, 'rb'),
+                    caption="Вітаємо! Ви отримали бадж **Початківець** 🎖️\nЗавантажте ще 5 скріншотів, щоб отримати бадж **Активний**!",
+                    parse_mode=ParseMode.MARKDOWN
+                )
+            elif total_contributions == 10 and "Активний" not in badges:
                 add_badge(user_entry, "Активний")
-                await update.message.reply_text("Вітаємо! Ви отримали бадж **Активний** 🎖️", parse_mode='Markdown')
+                badge_image_path = 'badges/aktyvnyi.png'
+                await update.message.reply_photo(
+                    photo=open(badge_image_path, 'rb'),
+                    caption="Вітаємо! Ви отримали бадж **Активний** 🎖️\nЗавантажте ще 10 скріншотів, щоб отримати бадж **Експерт**!",
+                    parse_mode=ParseMode.MARKDOWN
+                )
+            elif total_contributions == 20 and "Експерт" not in badges:
+                add_badge(user_entry, "Експерт")
+                badge_image_path = 'badges/ekspert.png'
+                await update.message.reply_photo(
+                    photo=open(badge_image_path, 'rb'),
+                    caption="Вітаємо! Ви отримали бадж **Експерт** 🎖️",
+                    parse_mode=ParseMode.MARKDOWN
+                )
 
             session.commit()
 
             await update.message.reply_text(
-                f"Скріншот для **{selected_character}** отримано та збережено! 🎉",
-                parse_mode='Markdown'
+                f"Скріншот для **{selected_character}** збережено! 🎉",
+                parse_mode=ParseMode.MARKDOWN
             )
 
             # Очищуємо вибір персонажа
             context.user_data.pop('selected_character')
+
+            # Повертаємося до головного меню
+            keyboard = [
+                ["Вибрати клас", "Перевірити прогрес"],
+                ["Команди", "Допомога"]
+            ]
+            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+            await update.message.reply_text("Повертаємося до головного меню:", reply_markup=reply_markup)
 
         except Exception as e:
             logger.error(f"Помилка при обробці скріншоту: {e}")
@@ -320,8 +393,42 @@ async def progress_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     total_contributions = session.query(Contribution).filter_by(user_id=user_id).count()
 
+    if total_contributions == 0:
+        await update.message.reply_text("Ви ще не завантажили жодного скріншоту.")
+        session.close()
+        return
+
+    # Отримуємо дати внесків
+    contributions = session.query(Contribution).filter_by(user_id=user_id).all()
+    dates = [c.timestamp.date() for c in contributions]
+    date_counts = {}
+    for date in dates:
+        date_counts[date] = date_counts.get(date, 0) + 1
+
+    sorted_dates = sorted(date_counts.keys())
+    counts = [date_counts[date] for date in sorted_dates]
+
+    # Створюємо діаграму
+    plt.figure(figsize=(10, 5))
+    plt.bar(sorted_dates, counts, color='skyblue')
+    plt.xlabel('Дата')
+    plt.ylabel('Кількість внесків')
+    plt.title('Ваша активність')
+    plt.xticks(rotation=45)
+
+    # Зберігаємо діаграму в пам'ять
+    buffer = io.BytesIO()
+    plt.tight_layout()
+    plt.savefig(buffer, format='png')
+    buffer.seek(0)
+    plt.close()
+
     progress_text = f"Ви завантажили **{total_contributions}** скріншотів."
-    await update.message.reply_text(progress_text, parse_mode='Markdown')
+    await update.message.reply_photo(
+        photo=buffer,
+        caption=progress_text,
+        parse_mode=ParseMode.MARKDOWN
+    )
     session.close()
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -330,21 +437,40 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/start - Показати головне меню.\n"
         "/choose_class - Вибрати клас персонажа.\n"
         "/progress - Перевірити ваш прогрес.\n"
-        "/help - Показати це повідомлення."
+        "/help - Показати це повідомлення.\n"
+        "/share - Поділитися своїм прогресом."
     )
     await update.message.reply_text(help_text)
+
+async def share_progress(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    user_id = str(user.id)
+
+    session = get_session()
+    total_contributions = session.query(Contribution).filter_by(user_id=user_id).count()
+    session.close()
+
+    if total_contributions == 0:
+        await update.message.reply_text("Ви ще не завантажили жодного скріншоту.")
+        return
+
+    share_text = f"Я завантажив {total_contributions} скріншотів у бота Mobile Legends!"
+
+    await update.message.reply_text(
+        f"Поділіться своїми досягненнями:\n\n{share_text}"
+    )
 
 # Обробник callback запитів
 async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     data = query.data
 
-    if data.startswith("class_"):
+    if data.startswith("class_") or data == "back_to_classes":
         await handle_class_selection(update, context)
-    elif data.startswith("character_"):
+    elif data.startswith("character_") or data == "recent_characters":
         await handle_character_selection(update, context)
-    elif data == "back_to_classes":
-        await handle_class_selection(update, context)
+    elif data == "back_to_main_menu":
+        await start(update, context)
     else:
         await query.answer("Не зрозумілий вибір.")
 
@@ -361,6 +487,22 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await help_command(update, context)
     else:
         await update.message.reply_text("Не зрозуміла команда. Використайте /help.")
+
+# Функція для надсилання щотижневих звітів
+async def send_weekly_reports(context: ContextTypes.DEFAULT_TYPE):
+    session = get_session()
+    users = session.query(User).all()
+    for user in users:
+        total_contributions = session.query(Contribution).filter_by(user_id=user.user_id).count()
+        if total_contributions > 0:
+            try:
+                await context.bot.send_message(
+                    chat_id=int(user.user_id),
+                    text=f"Привіт, {user.username}! Ви завантажили {total_contributions} скріншотів. Продовжуйте в тому ж дусі!"
+                )
+            except Exception as e:
+                logger.error(f"Не вдалося надіслати повідомлення користувачу {user.user_id}: {e}")
+    session.close()
 
 def main():
     TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -380,6 +522,7 @@ def main():
     application.add_handler(CommandHandler("choose_class", choose_class))
     application.add_handler(CommandHandler("progress", progress_command))
     application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("share", share_progress))
     application.add_handler(CallbackQueryHandler(callback_query_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, button_handler))
     application.add_handler(MessageHandler(filters.PHOTO, add_screenshot))
@@ -391,6 +534,11 @@ def main():
             await update.effective_message.reply_text("Виникла помилка. Спробуйте пізніше.")
 
     application.add_error_handler(error_handler)
+
+    # Налаштування планувальника
+    scheduler = AsyncIOScheduler()
+    scheduler.add_job(send_weekly_reports, 'interval', weeks=1, args=[application.bot])
+    scheduler.start()
 
     # Запуск бота з параметром drop_pending_updates=True
     application.run_polling(drop_pending_updates=True)
