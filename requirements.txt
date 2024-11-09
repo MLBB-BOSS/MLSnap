@@ -1,5 +1,7 @@
 python-telegram-bot==20.3
+SQLAlchemy==1.4.49
 python-dotenv==1.0.0
-SQLAlchemy==1.4.46
+apscheduler==3.10.1
 psycopg2-binary==2.9.6
-matplotlib==3.5.1
+matplotlib==3.7.1
+numpy<2
