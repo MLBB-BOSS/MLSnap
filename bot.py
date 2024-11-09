@@ -30,9 +30,15 @@ if not DATABASE_URL:
     logger.error("DATABASE_URL не знайдено. Будь ласка, встановіть його у змінних середовища.")
     exit(1)
 
+# Додавання цього блоку для заміни 'postgres://' на 'postgresql://'
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
+
+# Решта вашого коду...
 
 # Моделі бази даних
 class User(Base):
