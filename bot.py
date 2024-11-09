@@ -144,8 +144,11 @@ def load_characters():
             {"name": "Angela", "role": "Support"},
         ]
         for char_data in characters_data:
-            character = Character(name=char_data["name"], role=char_data["role"])
-            session.add(character)
+            # Перевірка на унікальність імені персонажа
+            existing_char = session.query(Character).filter_by(name=char_data["name"]).first()
+            if not existing_char:
+                character = Character(name=char_data["name"], role=char_data["role"])
+                session.add(character)
         session.commit()
         logger.info("Персонажі завантажені до бази даних")
     else:
@@ -240,7 +243,7 @@ async def add_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if 'selected_character' not in context.user_data:
-        await update.message.reply_text("Будь ласка, спочатку оберіть персонажа за допомогою /choose_class.")
+        await update.message.reply_text("Будь ласка, спочатку оберіть персонажа за допомогою кнопок меню.")
         session.close()
         return
 
