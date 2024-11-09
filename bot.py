@@ -5,7 +5,7 @@ from sqlalchemy import create_engine, Column, String, Integer, ForeignKey, DateT
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, sessionmaker
 from telegram import Update, ReplyKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters, ConversationHandler
 from dotenv import load_dotenv
 
 # Завантаження змінних середовища
@@ -90,78 +90,81 @@ HEROES = {
     "Support": ["Rafaela", "Minotaur", "Lolita", "Estes", "Angela"],
 }
 
+# Стан для розмови
+CHOOSE_CLASS, CHOOSE_HERO, AWAIT_SCREENSHOT = range(3)
+
 # Функція для відображення головного меню
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    session = get_session()
-    user = update.effective_user
-    user_id = str(user.id)
-    username = user.username or user.first_name
-
-    user_entry = session.query(User).filter_by(user_id=user_id).first()
-    if not user_entry:
-        user_entry = User(user_id=user_id, username=username)
-        session.add(user_entry)
-        session.commit()
-
-    session.close()
-
     reply_text = (
-        f"Привіт, {username}! 👋\n\n"
-        "Ласкаво просимо до меню вибору персонажів та завдань."
+        "Ласкаво просимо до меню вибору персонажів та завдань.\n\n"
+        "Оберіть клас персонажів для початку."
     )
-    keyboard = [
-        ["Вибрати персонажа", "Перевірити прогрес"],
-        ["Команди", "Допомога"]
-    ]
-    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-
-    await update.message.reply_text(reply_text, reply_markup=reply_markup)
-
-# Функція для відображення меню з вибором персонажів
-async def choose_hero(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [[hero for hero in heroes] for heroes in HEROES.values()]
+    keyboard = [[hero_class] for hero_class in HEROES.keys()]
     keyboard.append(["Повернутися до головного меню"])
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-    await update.message.reply_text("Оберіть персонажа:", reply_markup=reply_markup)
+    await update.message.reply_text(reply_text, reply_markup=reply_markup)
+    return CHOOSE_CLASS
+
+# Обробник для вибору класу
+async def choose_class(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    selected_class = update.message.text
+    context.user_data['selected_class'] = selected_class
+
+    if selected_class in HEROES:
+        keyboard = [[hero] for hero in HEROES[selected_class]]
+        keyboard.append(["Повернутися до вибору класу"])
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        await update.message.reply_text(f"Оберіть персонажа з класу {selected_class}:", reply_markup=reply_markup)
+        return CHOOSE_HERO
+    else:
+        await update.message.reply_text("Будь ласка, оберіть один із доступних класів.")
+        return CHOOSE_CLASS
 
 # Обробник для вибору персонажа
-async def handle_hero_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def choose_hero(update: Update, context: ContextTypes.DEFAULT_TYPE):
     selected_hero = update.message.text
+    context.user_data['selected_hero'] = selected_hero
+
     if selected_hero in sum(HEROES.values(), []):
-        await update.message.reply_text(f"Ви вибрали {selected_hero}. Надішліть скріншот, якщо готові.")
-    elif selected_hero == "Повернутися до головного меню":
-        await start(update, context)
+        await update.message.reply_text(
+            f"Ви вибрали {selected_hero}. Надішліть скріншот або поверніться до вибору класу чи персонажа.",
+            reply_markup=ReplyKeyboardMarkup([["Повернутися до вибору класу"]], resize_keyboard=True)
+        )
+        return AWAIT_SCREENSHOT
     else:
-        await update.message.reply_text("Обраний персонаж не знайдений. Спробуйте ще раз або скористайтеся /help.")
+        await update.message.reply_text("Будь ласка, оберіть персонажа зі списку.")
+        return CHOOSE_HERO
 
-async def progress_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# Обробник для отримання скріншоту
+async def receive_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_user.id)
+    selected_hero = context.user_data['selected_hero']
+    
     session = get_session()
-    user = update.effective_user
-    user_id = str(user.id)
-
-    user_entry = session.query(User).filter_by(user_id=user_id).first()
-    if not user_entry:
-        await update.message.reply_text("Ви ще не розпочали. Використайте /start для початку.")
-        session.close()
-        return
-
-    completed = session.query(Task).filter_by(user_id=user_id, completed=True).count()
-    total = session.query(Task).filter_by(user_id=user_id).count()
-
-    progress_text = f"Ви виконали {completed} з {total} завдань."
-    await update.message.reply_text(progress_text)
+    # Збереження скріншоту в базу даних
+    if update.message.photo:
+        photo_file = await update.message.photo[-1].get_file()
+        photo_bytes = await photo_file.download_as_bytearray()
+        
+        screenshot = Screenshot(
+            user_id=user_id,
+            task_id=None,  # Завдання можна налаштувати окремо
+            image_data=photo_bytes
+        )
+        session.add(screenshot)
+        session.commit()
+        await update.message.reply_text(f"Скріншот для персонажа {selected_hero} отримано та збережено!")
+    else:
+        await update.message.reply_text("Будь ласка, надішліть фото у вигляді зображення.")
+    
     session.close()
+    return ConversationHandler.END
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    help_text = (
-        "Доступні команди:\n"
-        "/start - Головне меню.\n"
-        "/choose_hero - Вибір персонажа.\n"
-        "/progress - Перевірити прогрес.\n"
-        "/help - Показати це повідомлення."
-    )
-    await update.message.reply_text(help_text)
+# Функція для повернення в головне меню
+async def return_to_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await start(update, context)
+    return CHOOSE_CLASS
 
 def main():
     TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -174,15 +177,33 @@ def main():
     # Створення таблиць у базі даних
     Base.metadata.create_all(bind=engine)
 
+    # Створення обробника розмови
+    conv_handler = ConversationHandler(
+        entry_points=[CommandHandler("start", start)],
+        states={
+            CHOOSE_CLASS: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, choose_class)
+            ],
+            CHOOSE_HERO: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, choose_hero)
+            ],
+            AWAIT_SCREENSHOT: [
+                MessageHandler(filters.PHOTO, receive_screenshot),
+                MessageHandler(filters.TEXT, return_to_main_menu)
+            ],
+        },
+        fallbacks=[MessageHandler(filters.TEXT & ~filters.COMMAND, return_to_main_menu)]
+    )
+
     # Додавання обробників
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("choose_hero", choose_hero))
-    application.add_handler(CommandHandler("progress", progress_command))
+    # Додавання обробників для інших команд
     application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_hero_selection))
+    application.add_error_handler(error_handler)
 
     # Запуск бота
-    application.run_polling()
+    application.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
+
+    #
