@@ -1,5 +1,4 @@
 # main.py
-import os
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler,
     CallbackQueryHandler, ContextTypes, filters
