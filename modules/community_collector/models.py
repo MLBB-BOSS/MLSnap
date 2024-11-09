@@ -1,15 +1,15 @@
-# modules/community_collector/models.py
-from sqlalchemy import (
-    Column, String, Integer,
-    ForeignKey, DateTime, LargeBinary, Table
-)
+from sqlalchemy import create_engine, Column, String, Integer, ForeignKey, DateTime, LargeBinary, Table
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, sessionmaker
 from datetime import datetime
+from config.settings import DATABASE_URL
 
+# Налаштування бази даних
+engine = create_engine(DATABASE_URL)
+SessionLocal = sessionmaker(bind=engine)
 Base = declarative_base()
 
-# Асоціативна таблиця для зв'язку багато-до-багатьох між користувачами та тегами
+# Асоціативна таблиця для зв’язку багато-до-багатьох між користувачами та тегами
 user_tags = Table(
     'user_tags',
     Base.metadata,
@@ -20,7 +20,7 @@ user_tags = Table(
 class User(Base):
     __tablename__ = 'users'
     user_id = Column(String, primary_key=True, index=True)
-    username = Column(String, unique=True, nullable=False)
+    username = Column(String, unique=False, nullable=False)
     badges = Column(String, default="")
     tags = relationship("Tag", secondary=user_tags, back_populates="users")
     contributions = relationship("Contribution", back_populates="user")
@@ -35,7 +35,7 @@ class Tag(Base):
 class Character(Base):
     __tablename__ = 'characters'
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, unique=True, nullable=False)
+    name = Column(String, unique=True, nullable=False, index=True)
     role = Column(String, nullable=False)
     screenshots = relationship("Screenshot", back_populates="character")
 
@@ -44,7 +44,7 @@ class Contribution(Base):
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(String, ForeignKey('users.user_id'))
     character_id = Column(Integer, ForeignKey('characters.id'))
-    timestamp = Column(DateTime, default=datetime.utcnow)
+    timestamp = Column(DateTime, default=datetime.utcnow, index=True)
     user = relationship("User", back_populates="contributions")
     character = relationship("Character")
 
@@ -54,7 +54,10 @@ class Screenshot(Base):
     user_id = Column(String, ForeignKey('users.user_id'))
     character_id = Column(Integer, ForeignKey('characters.id'))
     image_data = Column(LargeBinary, nullable=False)
-    image_hash = Column(String, nullable=False)
-    timestamp = Column(DateTime, default=datetime.utcnow)
+    image_hash = Column(String, nullable=False, unique=True)
+    timestamp = Column(DateTime, default=datetime.utcnow, index=True)
     user = relationship("User", back_populates="screenshots")
     character = relationship("Character", back_populates="screenshots")
+
+# Експортуємо необхідні змінні та класи
+__all__ = ['Base', 'engine', 'SessionLocal', 'User', 'Tag', 'Character', 'Contribution', 'Screenshot']
