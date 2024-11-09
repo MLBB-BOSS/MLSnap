@@ -209,7 +209,11 @@ async def handle_class_selection(update: Update, context: ContextTypes.DEFAULT_T
         keyboard = [[InlineKeyboardButton(char, callback_data=f"character_{char}")] for char in characters]
         keyboard.append([InlineKeyboardButton("Повернутися до класів", callback_data="back_to_classes")])
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text(f"Оберіть персонажа з класу **{selected_class}**:", parse_mode='Markdown', reply_markup=reply_markup)
+        await query.edit_message_text(
+            f"Оберіть персонажа з класу **{selected_class}**:",
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
 
     elif data == "back_to_classes":
         keyboard = [[InlineKeyboardButton(class_name, callback_data=f"class_{class_name}")] for class_name in HEROES.keys()]
@@ -224,7 +228,10 @@ async def handle_character_selection(update: Update, context: ContextTypes.DEFAU
     if data.startswith("character_"):
         selected_character = data.split("_")[1]
         context.user_data['selected_character'] = selected_character
-        await query.edit_message_text(f"Ви вибрали: **{selected_character}**.\nБудь ласка, надішліть скріншот.", parse_mode='Markdown')
+        await query.edit_message_text(
+            f"Ви вибрали: **{selected_character}**.\nБудь ласка, надішліть скріншот.",
+            parse_mode='Markdown'
+        )
 
     elif data == "back_to_classes":
         keyboard = [[InlineKeyboardButton(class_name, callback_data=f"class_{class_name}")] for class_name in HEROES.keys()]
@@ -283,7 +290,10 @@ async def add_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             session.commit()
 
-            await update.message.reply_text(f"Скріншот для **{selected_character}** отримано та збережено! 🎉", parse_mode='Markdown')
+            await update.message.reply_text(
+                f"Скріншот для **{selected_character}** отримано та збережено! 🎉",
+                parse_mode='Markdown'
+            )
 
             # Очищуємо вибір персонажа
             context.user_data.pop('selected_character')
