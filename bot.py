@@ -4,11 +4,12 @@ from datetime import datetime
 from sqlalchemy import create_engine, Column, String, Integer, ForeignKey, DateTime, Boolean, func, LargeBinary
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, sessionmaker
-from telegram import Update, ReplyKeyboardMarkup
+from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     MessageHandler,
+    CallbackQueryHandler,
     ContextTypes,
     filters,
 )
@@ -48,20 +49,31 @@ class User(Base):
     contributions = relationship("Contribution", back_populates="user")
     screenshots = relationship("Screenshot", back_populates="user")
 
+class Character(Base):
+    __tablename__ = 'characters'
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, unique=True, nullable=False)
+    role = Column(String, nullable=False)
+    screenshots = relationship("Screenshot", back_populates="character")
+
 class Contribution(Base):
     __tablename__ = 'contributions'
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(String, ForeignKey('users.user_id'))
+    character_id = Column(Integer, ForeignKey('characters.id'))
     timestamp = Column(DateTime, default=datetime.utcnow)
     user = relationship("User", back_populates="contributions")
+    character = relationship("Character")
 
 class Screenshot(Base):
     __tablename__ = 'screenshots'
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(String, ForeignKey('users.user_id'))
+    character_id = Column(Integer, ForeignKey('characters.id'))
     image_data = Column(LargeBinary, nullable=False)
     timestamp = Column(DateTime, default=datetime.utcnow)
     user = relationship("User", back_populates="screenshots")
+    character = relationship("Character", back_populates="screenshots")
 
 # Функції для роботи з базою даних
 def get_session():
@@ -72,6 +84,26 @@ def add_badge(user, badge_name):
     if badge_name not in badges:
         badges.append(badge_name)
         user.badges = ", ".join(badges)
+
+def load_characters():
+    session = get_session()
+    existing_characters = session.query(Character).count()
+    if existing_characters == 0:
+        # Перелік персонажів за класами
+        characters_data = [
+            {"name": "Balmond", "role": "Fighter"},
+            {"name": "Alucard", "role": "Fighter"},
+            # Додайте всіх персонажів з вашого списку
+            # ...
+        ]
+        for char_data in characters_data:
+            character = Character(name=char_data["name"], role=char_data["role"])
+            session.add(character)
+        session.commit()
+        logger.info("Персонажі завантажені до бази даних")
+    else:
+        logger.info("Персонажі вже існують у базі даних")
+    session.close()
 
 # Обробники команд та повідомлень
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -91,7 +123,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_text = (
         f"Привіт, {username}! 👋\n\n"
         "Дякуємо за допомогу у зборі скріншотів персонажів.\n"
-        "Ви можете завантажувати скріншоти без обмежень!\n"
+        "Ви можете обрати персонажа за допомогою /characters.\n"
         "Якщо у вас виникнуть питання, скористайтесь /help."
     )
 
@@ -102,6 +134,113 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
     await update.message.reply_text(reply_text, reply_markup=reply_markup)
+
+async def characters_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    session = get_session()
+    user_id = str(update.effective_user.id)
+    characters = session.query(Character).all()
+
+    # Отримуємо список персонажів, для яких користувач вже надіслав скріншоти
+    user_screenshots = session.query(Screenshot.character_id).filter_by(user_id=user_id).all()
+    user_character_ids = [sc[0] for sc in user_screenshots]
+
+    session.close()
+
+    # Групуємо персонажів за ролями
+    roles = {}
+    for char in characters:
+        if char.role not in roles:
+            roles[char.role] = []
+        status = "✅ Отримано" if char.id in user_character_ids else "⏳ Очікується"
+        button_text = f"{char.name} ({status})"
+        roles[char.role].append(
+            InlineKeyboardButton(button_text, callback_data=f"select_{char.name}")
+        )
+
+    keyboard = []
+    for role, buttons in roles.items():
+        # Додаємо кнопку з назвою ролі (не натискається)
+        keyboard.append([InlineKeyboardButton(f"--- {role} ---", callback_data="ignore")])
+        # Розбиваємо кнопки на рядки по 2 кнопки
+        for i in range(0, len(buttons), 2):
+            keyboard.append(buttons[i:i+2])
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await update.message.reply_text("Виберіть персонажа для завантаження скріншоту:", reply_markup=reply_markup)
+
+async def character_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+
+    if data == "ignore":
+        return
+    elif data.startswith("select_"):
+        character_name = data.replace("select_", "")
+        context.user_data['selected_character'] = character_name
+        await query.edit_message_text(f"Ви вибрали: {character_name}. Будь ласка, надішліть скріншот.")
+
+async def add_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    user_id = str(user.id)
+    session = get_session()
+
+    user_entry = session.query(User).filter_by(user_id=user_id).first()
+    if not user_entry:
+        await update.message.reply_text("Ви ще не розпочали. Використайте /start для початку.")
+        session.close()
+        return
+
+    if 'selected_character' not in context.user_data:
+        await update.message.reply_text("Будь ласка, спочатку виберіть персонажа за допомогою /characters.")
+        session.close()
+        return
+
+    character_name = context.user_data['selected_character']
+    character = session.query(Character).filter_by(name=character_name).first()
+
+    if update.message.photo:
+        try:
+            photo_file = await update.message.photo[-1].get_file()
+            photo_bytes = await photo_file.download_as_bytearray()
+
+            # Збереження скріншоту в базу даних
+            screenshot = Screenshot(
+                user_id=user_id,
+                character_id=character.id,
+                image_data=photo_bytes
+            )
+            session.add(screenshot)
+
+            # Додавання внеску
+            contribution = Contribution(user_id=user_id, character_id=character.id)
+            session.add(contribution)
+
+            # Перевірка на баджі
+            total_contributions = session.query(Contribution).filter_by(user_id=user_id).count()
+            if total_contributions == 5 and "Початківець" not in (user_entry.badges or ""):
+                add_badge(user_entry, "Початківець")
+                await update.message.reply_text("Вітаємо! Ви отримали бадж **Початківець** 🎖️", parse_mode='Markdown')
+            elif total_contributions == 10 and "Активний" not in (user_entry.badges or ""):
+                add_badge(user_entry, "Активний")
+                await update.message.reply_text("Вітаємо! Ви отримали бадж **Активний** 🎖️", parse_mode='Markdown')
+
+            session.commit()
+
+            await update.message.reply_text(f"Скріншот для '{character_name}' отримано та збережено! 🎉")
+
+            # Очищаємо вибір персонажа
+            context.user_data.pop('selected_character')
+
+        except Exception as e:
+            logger.error(f"Помилка при обробці скріншоту: {e}")
+            await update.message.reply_text("Виникла помилка при збереженні скріншоту. Спробуйте ще раз.")
+        finally:
+            session.close()
+    else:
+        await update.message.reply_text("Будь ласка, надішліть зображення у форматі фото.")
+        session.close()
 
 async def progress_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session = get_session()
@@ -124,6 +263,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_text = (
         "Доступні команди:\n"
         "/start - Запустити бота та отримати привітання.\n"
+        "/characters - Обрати персонажа для завантаження скріншоту.\n"
         "/progress - Перевірити ваш прогрес.\n"
         "/leaderboard - Показати топ учасників.\n"
         "/help - Показати це повідомлення."
@@ -133,62 +273,13 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.message.text
     if query == "Додати скріншот":
-        await update.message.reply_text("Будь ласка, надішліть скріншот.")
+        await characters_command(update, context)
     elif query == "Перевірити прогрес":
         await progress_command(update, context)
     elif query in ["Команди", "Допомога"]:
         await help_command(update, context)
     else:
         await update.message.reply_text("Не зрозуміла команда. Використайте /help.")
-
-async def add_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    session = get_session()
-    user = update.effective_user
-    user_id = str(user.id)
-
-    user_entry = session.query(User).filter_by(user_id=user_id).first()
-    if not user_entry:
-        await update.message.reply_text("Ви ще не розпочали. Використайте /start для початку.")
-        session.close()
-        return
-
-    if update.message.photo:
-        try:
-            photo_file = await update.message.photo[-1].get_file()
-
-            # Завантаження фото у вигляді байтів
-            photo_bytes = await photo_file.download_as_bytearray()
-
-            # Збереження скріншоту в базу даних
-            screenshot = Screenshot(
-                user_id=user_id,
-                image_data=photo_bytes
-            )
-            session.add(screenshot)
-
-            # Додавання внеску
-            contribution = Contribution(user_id=user_id)
-            session.add(contribution)
-
-            # Перевірка на баджі
-            total_contributions = session.query(Contribution).filter_by(user_id=user_id).count()
-            if total_contributions == 5 and "Початківець" not in (user_entry.badges or ""):
-                add_badge(user_entry, "Початківець")
-                await update.message.reply_text("Вітаємо! Ви отримали бадж **Початківець** 🎖️", parse_mode='Markdown')
-            elif total_contributions == 10 and "Активний" not in (user_entry.badges or ""):
-                add_badge(user_entry, "Активний")
-                await update.message.reply_text("Вітаємо! Ви отримали бадж **Активний** 🎖️", parse_mode='Markdown')
-
-            session.commit()
-
-            await update.message.reply_text(f"Скріншот отримано та збережено! 🎉")
-        except Exception as e:
-            logger.error(f"Помилка при обробці скріншоту: {e}")
-            await update.message.reply_text("Виникла помилка при збереженні скріншоту. Спробуйте ще раз.")
-        finally:
-            session.close()
-    else:
-        await update.message.reply_text("Будь ласка, надішліть зображення у форматі фото.")
 
 async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session = get_session()
@@ -226,12 +317,16 @@ def main():
 
     # Створення таблиць у базі даних
     Base.metadata.create_all(bind=engine)
+    # Завантаження персонажів до бази даних
+    load_characters()
 
     # Додавання обробників
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("characters", characters_command))
     application.add_handler(CommandHandler("progress", progress_command))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("leaderboard", leaderboard))
+    application.add_handler(CallbackQueryHandler(character_selection))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, button_handler))
     application.add_handler(MessageHandler(filters.PHOTO, add_screenshot))
     application.add_error_handler(error_handler)
