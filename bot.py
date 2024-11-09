@@ -1,5 +1,6 @@
 import os
 import logging
+import asyncio
 from datetime import datetime
 from sqlalchemy import create_engine, Column, String, Integer, ForeignKey, DateTime, Boolean, func, LargeBinary
 from sqlalchemy.ext.declarative import declarative_base
@@ -275,7 +276,7 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     if isinstance(update, Update) and update.effective_message:
         await update.effective_message.reply_text("Виникла помилка. Спробуйте пізніше.")
 
-def main():
+async def main():
     TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
     if not TOKEN:
         logger.error("TELEGRAM_BOT_TOKEN не встановлено у змінних середовища.")
@@ -284,12 +285,8 @@ def main():
     application = ApplicationBuilder().token(TOKEN).build()
 
     # Видалення вебхука перед запуском опитування
-    async def remove_webhook():
-        await application.bot.delete_webhook(drop_pending_updates=True)
-        logger.info("Вебхук видалено")
-
-    import asyncio
-    asyncio.run(remove_webhook())
+    await application.bot.delete_webhook(drop_pending_updates=True)
+    logger.info("Вебхук видалено")
 
     # Створення таблиць у базі даних
     Base.metadata.create_all(bind=engine)
@@ -305,7 +302,7 @@ def main():
     application.add_error_handler(error_handler)
 
     # Запуск бота
-    application.run_polling()
+    await application.run_polling()
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
