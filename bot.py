@@ -24,6 +24,7 @@ if not DATABASE_URL:
     logger.error("DATABASE_URL не знайдено. Будь ласка, встановіть його у змінних середовища.")
     exit(1)
 
+# Замінюємо 'postgres://' на 'postgresql://', якщо необхідно
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
     logger.info("Замінено 'postgres://' на 'postgresql://' у DATABASE_URL")
@@ -89,6 +90,7 @@ HEROES = {
     "Support": ["Rafaela", "Minotaur", "Lolita", "Estes", "Angela"],
 }
 
+# Функція для відображення головного меню
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session = get_session()
     user = update.effective_user
@@ -105,18 +107,31 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     reply_text = (
         f"Привіт, {username}! 👋\n\n"
-        "Виберіть персонажа для завантаження скріншотів або перевірте прогрес завдань."
+        "Ласкаво просимо до меню вибору персонажів та завдань."
     )
-    keyboard = [[hero for hero in heroes] for heroes in HEROES.values()]
-    keyboard.append(["Перевірити прогрес", "Допомога"])
+    keyboard = [
+        ["Вибрати персонажа", "Перевірити прогрес"],
+        ["Команди", "Допомога"]
+    ]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
     await update.message.reply_text(reply_text, reply_markup=reply_markup)
 
+# Функція для відображення меню з вибором персонажів
+async def choose_hero(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [[hero for hero in heroes] for heroes in HEROES.values()]
+    keyboard.append(["Повернутися до головного меню"])
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+    await update.message.reply_text("Оберіть персонажа:", reply_markup=reply_markup)
+
+# Обробник для вибору персонажа
 async def handle_hero_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     selected_hero = update.message.text
     if selected_hero in sum(HEROES.values(), []):
         await update.message.reply_text(f"Ви вибрали {selected_hero}. Надішліть скріншот, якщо готові.")
+    elif selected_hero == "Повернутися до головного меню":
+        await start(update, context)
     else:
         await update.message.reply_text("Обраний персонаж не знайдений. Спробуйте ще раз або скористайтеся /help.")
 
@@ -138,6 +153,16 @@ async def progress_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(progress_text)
     session.close()
 
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    help_text = (
+        "Доступні команди:\n"
+        "/start - Головне меню.\n"
+        "/choose_hero - Вибір персонажа.\n"
+        "/progress - Перевірити прогрес.\n"
+        "/help - Показати це повідомлення."
+    )
+    await update.message.reply_text(help_text)
+
 def main():
     TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
     if not TOKEN:
@@ -151,7 +176,9 @@ def main():
 
     # Додавання обробників
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("choose_hero", choose_hero))
     application.add_handler(CommandHandler("progress", progress_command))
+    application.add_handler(CommandHandler("help", help_command))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_hero_selection))
 
     # Запуск бота
