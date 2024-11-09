@@ -1,19 +1,33 @@
-# main.py
-from telegram.ext import (
-    ApplicationBuilder, CommandHandler, MessageHandler,
-    CallbackQueryHandler, ContextTypes, filters
-)
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
+import logging
+from telegram.ext import ApplicationBuilder
+from config.settings import TELEGRAM_BOT_TOKEN, WEBHOOK_URL
 from modules.community_collector.handlers import (
-    start, choose_class, progress_command, help_command,
-    share_progress, callback_query_handler, button_handler,
-    add_screenshot, send_weekly_reports, error_handler
+    start,
+    choose_class,
+    progress_command,
+    help_command,
+    share_progress,
+    callback_query_handler,
+    button_handler,
+    add_screenshot,
+    error_handler,
 )
-from modules.community_collector.utils import load_characters, engine
-from modules.community_collector.models import Base
-from config.settings import TELEGRAM_BOT_TOKEN, logger
+from modules.community_collector.scheduler import start_scheduler
+from modules.community_collector.models import Base, engine
+from modules.community_collector.utils import load_characters
+
+# Налаштування логування
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
 def main():
+    if not TELEGRAM_BOT_TOKEN:
+        logger.error("TELEGRAM_BOT_TOKEN не встановлено.")
+        return
+
     application = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
 
     # Створення таблиць у базі даних
@@ -34,13 +48,17 @@ def main():
     # Обробник помилок
     application.add_error_handler(error_handler)
 
-    # Налаштування планувальника
-    scheduler = AsyncIOScheduler()
-    scheduler.add_job(send_weekly_reports, 'interval', weeks=1, args=[application.bot])
-    scheduler.start()
+    # Запуск планувальника
+    start_scheduler(application)
 
-    # Запуск бота
-    application.run_polling(drop_pending_updates=True)
+    # Налаштування вебхука
+    PORT = int(os.environ.get('PORT', '8443'))
+    application.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        url_path=TELEGRAM_BOT_TOKEN,
+        webhook_url=f"{WEBHOOK_URL}/{TELEGRAM_BOT_TOKEN}"
+    )
 
 if __name__ == "__main__":
     main()
