@@ -30,6 +30,11 @@ if not DATABASE_URL:
     logger.error("DATABASE_URL не знайдено. Будь ласка, встановіть його у змінних середовища.")
     exit(1)
 
+# Замінюємо 'postgres://' на 'postgresql://', якщо необхідно
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+    logger.info("Замінено 'postgres://' на 'postgresql://' у DATABASE_URL")
+
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
@@ -71,23 +76,6 @@ class Screenshot(Base):
     timestamp = Column(DateTime, default=datetime.utcnow)
     user = relationship("User", back_populates="screenshots")
     task = relationship("Task")
-
-# Видаляємо код, пов'язаний з AWS S3
-# import boto3
-# from botocore.exceptions import NoCredentialsError
-
-# # Налаштування S3
-# s3 = boto3.client(
-#     's3',
-#     aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
-#     aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY")
-# )
-# S3_BUCKET = os.getenv("AWS_S3_BUCKET_NAME")
-
-# Видаляємо створення папки для скріншотів
-# SCREENSHOTS_DIR = "screenshots"
-# if not os.path.exists(SCREENSHOTS_DIR):
-#     os.makedirs(SCREENSHOTS_DIR)
 
 # Функції для роботи з базою даних
 def get_session():
@@ -297,8 +285,8 @@ def main():
     application.add_handler(MessageHandler(filters.PHOTO, add_screenshot))
     application.add_error_handler(error_handler)
 
-    # Запуск бота
-    application.run_polling()
+    # Запуск бота з параметром drop_pending_updates=True
+    application.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
