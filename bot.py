@@ -109,66 +109,32 @@ def add_badge(user, badge_name):
 def load_characters():
     session = get_session()
     existing_characters = session.query(Character).count()
-    if existing_characters == 0:
-        # Перелік персонажів за класами
-        characters_data = [
-            # Fighter
-            {"name": "Balmond", "role": "Fighter"},
-            {"name": "Alucard", "role": "Fighter"},
-            {"name": "Bane", "role": "Fighter"},
-            {"name": "Zilong", "role": "Fighter"},
-            {"name": "Freya", "role": "Fighter"},
-            # Tank
-            {"name": "Alice", "role": "Tank"},
-            {"name": "Tigreal", "role": "Tank"},
-            {"name": "Akai", "role": "Tank"},
-            {"name": "Franco", "role": "Tank"},
-            {"name": "Minotaur", "role": "Tank"},
-            # Assassin
-            {"name": "Saber", "role": "Assassin"},
-            {"name": "Fanny", "role": "Assassin"},
-            {"name": "Natalia", "role": "Assassin"},
-            {"name": "Lancelot", "role": "Assassin"},
-            {"name": "Hayabusa", "role": "Assassin"},
-            # Marksman
-            {"name": "Popol and Kupa", "role": "Marksman"},
-            {"name": "Brody", "role": "Marksman"},
-            {"name": "Beatrix", "role": "Marksman"},
-            {"name": "Natan", "role": "Marksman"},
-            {"name": "Melissa", "role": "Marksman"},
-            # Mage
-            {"name": "Vale", "role": "Mage"},
-            {"name": "Lunox", "role": "Mage"},
-            {"name": "Kadita", "role": "Mage"},
-            {"name": "Cecillion", "role": "Mage"},
-            {"name": "Luo Yi", "role": "Mage"},
-            # Support
-            {"name": "Rafaela", "role": "Support"},
-            {"name": "Minotaur", "role": "Support"},
-            {"name": "Lolita", "role": "Support"},
-            {"name": "Estes", "role": "Support"},
-            {"name": "Angela", "role": "Support"},
-        ]
-        for char_data in characters_data:
-            # Перевірка на унікальність імені персонажа
-            existing_char = session.query(Character).filter_by(name=char_data["name"]).first()
-            if not existing_char:
-                character = Character(name=char_data["name"], role=char_data["role"])
-                session.add(character)
+    characters_data = []
+    for role, characters in HEROES.items():
+        for name in characters:
+            characters_data.append({"name": name, "role": role})
+    new_characters_added = False
+    for char_data in characters_data:
+        existing_char = session.query(Character).filter_by(name=char_data["name"]).first()
+        if not existing_char:
+            character = Character(name=char_data["name"], role=char_data["role"])
+            session.add(character)
+            new_characters_added = True
+    if new_characters_added:
         session.commit()
-        logger.info("Персонажі завантажені до бази даних")
+        logger.info("Нові персонажі додані до бази даних")
     else:
         logger.info("Персонажі вже існують у базі даних")
     session.close()
 
 # Ініціалізація списку персонажів
 HEROES = {
-    "Fighter": ["Balmond", "Alucard", "Bane", "Zilong", "Freya"],
-    "Tank": ["Alice", "Tigreal", "Akai", "Franco", "Minotaur"],
-    "Assassin": ["Saber", "Fanny", "Natalia", "Lancelot", "Hayabusa"],
-    "Marksman": ["Popol and Kupa", "Brody", "Beatrix", "Natan", "Melissa"],
-    "Mage": ["Vale", "Lunox", "Kadita", "Cecillion", "Luo Yi"],
-    "Support": ["Rafaela", "Minotaur", "Lolita", "Estes", "Angela"],
+    "Fighter": ["Balmond", "Alucard", "Bane", "Zilong", "Freya", "Alpha", "Ruby", "Roger", "Gatotkaca", "Jawhead", "Martis", "Aldous", "Minsitthar", "Terizla", "X.Borg", "Dyrroth", "Masha", "Silvanna", "Yu Zhong", "Khaleed", "Barats", "Paquito", "Phoveus", "Aulus", "Fredrinn", "Arlott", "Kaja", "Leomord", "Thamuz", "Badang", "Guinevere"],
+    "Tank": ["Alice", "Tigreal", "Akai", "Franco", "Minotaur", "Lolita", "Gatotkaca", "Grock", "Hylos", "Uranus", "Belerick", "Khufra", "Esmeralda", "Terizla", "Baxia", "Masha", "Atlas", "Barats", "Edith", "Fredrinn", "Johnson", "Hilda", "Carmilla", "Gloo"],
+    "Assassin": ["Saber", "Alucard", "Zilong", "Fanny", "Natalia", "Yi Sun-shin", "Lancelot", "Helcurt", "Lesley", "Selena", "Mathilda", "Paquito", "Yin", "Arlott", "Harley", "Gusion"],
+    "Marksman": ["Popol and Kupa", "Brody", "Beatrix", "Natan", "Melissa", "Ixia", "Hanabi", "Claude", "Kimmy", "Granger", "Wanwan", "Miya", "Bruno", "Clint", "Layla", "Yi Sun-shin", "Moskov", "Roger", "Karrie", "Irithel", "Lesley"],
+    "Mage": ["Vale", "Lunox", "Kadita", "Cecillion", "Luo Yi", "Xavier", "Novaria", "Zhask", "Harley", "Yve", "Aurora", "Faramis", "Esmeralda", "Kagura", "Cyclops", "Vexana", "Odette"],
+    "Support": ["Rafaela", "Minotaur", "Lolita", "Estes", "Angela", "Faramis", "Mathilda", "Floryn", "Johnson"]
 }
 
 # Обробники команд та повідомлень
@@ -215,7 +181,7 @@ async def handle_class_selection(update: Update, context: ContextTypes.DEFAULT_T
     data = query.data
 
     if data.startswith("class_"):
-        selected_class = data.split("_")[1]
+        selected_class = data.split("_", 1)[1]
         context.user_data['selected_class'] = selected_class
         characters = HEROES[selected_class]
         keyboard = [[InlineKeyboardButton(char, callback_data=f"character_{char}")] for char in characters]
@@ -240,7 +206,7 @@ async def handle_character_selection(update: Update, context: ContextTypes.DEFAU
     data = query.data
 
     if data.startswith("character_"):
-        selected_character = data.split("_")[1]
+        selected_character = data.split("_", 1)[1]
         context.user_data['selected_character'] = selected_character
 
         # Зберігаємо останні вибрані персонажі
