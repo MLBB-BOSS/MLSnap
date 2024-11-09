@@ -40,7 +40,7 @@ engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-# Визначення асоціативної таблиці для багато-до-багатьох зв’язку
+# Визначення асоціативної таблиці для багато-до-багатьох зв’язку між користувачами та тегами
 user_tags = Table(
     'user_tags',
     Base.metadata,
@@ -152,6 +152,16 @@ def load_characters():
         logger.info("Персонажі вже існують у базі даних")
     session.close()
 
+# Ініціалізація списку персонажів
+HEROES = {
+    "Fighter": ["Balmond", "Alucard", "Bane", "Zilong", "Freya"],
+    "Tank": ["Alice", "Tigreal", "Akai", "Franco", "Minotaur"],
+    "Assassin": ["Saber", "Alucard", "Zilong", "Fanny", "Natalia"],
+    "Marksman": ["Popol and Kupa", "Brody", "Beatrix", "Natan", "Melissa"],
+    "Mage": ["Vale", "Lunox", "Kadita", "Cecillion", "Luo Yi"],
+    "Support": ["Rafaela", "Minotaur", "Lolita", "Estes", "Angela"],
+}
+
 # Обробники команд та повідомлень
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session = get_session()
@@ -199,7 +209,9 @@ async def handle_class_selection(update: Update, context: ContextTypes.DEFAULT_T
         await query.edit_message_text(f"Оберіть персонажа з класу **{selected_class}**:", parse_mode='Markdown', reply_markup=reply_markup)
 
     elif data == "back_to_classes":
-        await handle_class_selection(update, context)
+        keyboard = [[InlineKeyboardButton(class_name, callback_data=f"class_{class_name}")] for class_name in HEROES.keys()]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text("Оберіть клас персонажа:", reply_markup=reply_markup)
 
 async def handle_character_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -212,7 +224,9 @@ async def handle_character_selection(update: Update, context: ContextTypes.DEFAU
         await query.edit_message_text(f"Ви вибрали: **{selected_character}**.\nБудь ласка, надішліть скріншот.", parse_mode='Markdown')
 
     elif data == "back_to_classes":
-        await handle_class_selection(update, context)
+        keyboard = [[InlineKeyboardButton(class_name, callback_data=f"class_{class_name}")] for class_name in HEROES.keys()]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text("Оберіть клас персонажа:", reply_markup=reply_markup)
 
 async def add_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -232,6 +246,11 @@ async def add_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     selected_character = context.user_data['selected_character']
     character = session.query(Character).filter_by(name=selected_character).first()
+
+    if not character:
+        await update.message.reply_text("Вибраний персонаж не знайдений у базі даних.")
+        session.close()
+        return
 
     if update.message.photo:
         try:
