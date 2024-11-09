@@ -1,4 +1,4 @@
-Юpython-telegram-bot==20.3
+python-telegram-bot==20.3
 SQLAlchemy==1.4.49
 python-dotenv==1.0.0
 apscheduler==3.10.1
