@@ -47,7 +47,7 @@ class User(Base):
     badges = Column(String, default="")
     tasks = relationship("Task", back_populates="user")
     contributions = relationship("Contribution", back_populates="user")
-    screenshots = relationship("Screenshot", back_populates="user")  # Додано відношення до Screenshot
+    screenshots = relationship("Screenshot", back_populates="user")
 
 class Task(Base):
     __tablename__ = 'tasks'
@@ -66,7 +66,6 @@ class Contribution(Base):
     user = relationship("User", back_populates="contributions")
     task = relationship("Task")
 
-# Нова модель для збереження скріншотів
 class Screenshot(Base):
     __tablename__ = 'screenshots'
     id = Column(Integer, primary_key=True, index=True)
@@ -282,14 +281,14 @@ async def main():
         logger.error("TELEGRAM_BOT_TOKEN не встановлено у змінних середовища.")
         return
 
+    # Створення таблиць у базі даних
+    Base.metadata.create_all(bind=engine)
+
     application = ApplicationBuilder().token(TOKEN).build()
 
     # Видалення вебхука перед запуском опитування
     await application.bot.delete_webhook(drop_pending_updates=True)
     logger.info("Вебхук видалено")
-
-    # Створення таблиць у базі даних
-    Base.metadata.create_all(bind=engine)
 
     # Додавання обробників
     application.add_handler(CommandHandler("start", start))
@@ -302,7 +301,24 @@ async def main():
     application.add_error_handler(error_handler)
 
     # Запуск бота
-    await application.run_polling()
+    await application.initialize()
+    await application.start()
+    logger.info("Бот запущено")
+
+    # Тримати бота запущеним до ручного переривання
+    try:
+        await application.updater.start_polling()
+        await application.updater.idle()
+    finally:
+        await application.stop()
+        await application.shutdown()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    # Отримуємо поточний цикл подій або створюємо новий
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+    loop.run_until_complete(main())
